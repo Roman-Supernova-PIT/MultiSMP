@@ -9,6 +9,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent/"extern/snappl"))
 # End of lines that will go away once we do this right
 
 import numpy as np
+import astropy
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy import units as u
@@ -34,7 +35,8 @@ import scipy.sparse as sp
 from numpy.linalg import LinAlgError
 from scipy.interpolate import RegularGridInterpolator
 from snappl.image import OpenUniverse2024FITSImage
-from snappl.logger import Lager
+from snpit_utils.logger import SNLogger as Lager
+from snpit_utils.config import Config
 
 # This supresses a warning because the Open Universe Simulations dates are not
 # FITS compliant.
@@ -267,10 +269,9 @@ def generateGuess(imlist, wcslist, ra_grid, dec_grid):
     return all_vals/len(wcslist)
 
 
-def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize, bpass,
-                             use_roman, color=0.61, psf=None, pixel=False,
-                             include_photonOps=False, util_ref=None,
-                             band=None):
+def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize, band,
+                             use_roman, psf=None, pixel=False,
+                             util_ref=None):
 
     '''
     Constructs the background model around a certain image (x,y) location and
@@ -283,13 +284,10 @@ def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize, bpass,
     location in the SCA.
     stampsize: the size of the stamp being used
     bpass: the bandpass being used
-    flatten: whether to flatten the output array (REMOVED XXXXXX)
-    color: the color of the star being used (currently not used)
     psf: Here you can provide a PSF to use, if you don't provide one, you must
     provide a util_ref, which will calculate the Roman PSF instead.
     pixel: If True, use a pixel tophat function to convolve the PSF with,
     otherwise use a delta function. Does not seem to hugely affect results.
-    include_photonOps: If True, use photon ops in the background model.
     This is not recommended for general use, as it is very slow.
     util_ref: A reference to the util object, which is used to calculate the
             PSF. If you provide this, you don't need to provide a PSF. Note
@@ -305,82 +303,74 @@ def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize, bpass,
     assert util_ref is not None or band is not None, 'you must provide at \
         least util_ref or band'
 
+    if isinstance(wcs, astropy.wcs.wcs.WCS):
+        # Astropy / snappl wcs
+        Lager.debug('Astropy / snappl wcs detected')
+        x, y = wcs.world_to_pixel(SkyCoord(ra, dec, unit='deg'))
+        x += 1  # Astropy WCS is 0-indexed, so we add 1 to match galsim
+        y += 1
+        wcs = galsim.AstropyWCS(wcs=wcs)
+
+    elif isinstance(wcs, galsim.fitswcs.AstropyWCS):
+        # Galsim wcs
+        x, y = wcs.toImage(ra, dec, units='deg')
+        Lager.warning('Galsim WCS detected, soon this will no longer be' +
+                      ' supported.')
+
+    else:
+        raise TypeError('WCS type not recognized. Please use Astropy WCS' +
+                        ' or Galsim WCS.')
+
+    Lager.debug('Affine')
+    Lager.debug(wcs.affine)
+
     if not use_roman:
         assert psf is not None, 'you must provide an input psf if \
                                  not using roman.'
     else:
-        psf = None
+        # How different are these two methods? TODO XXX
+        pupil_bin = 8
+        #roman_psf =  util_ref.getPSF(x_loc,y_loc,pupil_bin=pupil_bin)
+        psf = galsim.roman.getPSF(1, band, pupil_bin=pupil_bin, wcs=wcs)
 
-    if type(wcs) == galsim.fitswcs.AstropyWCS:
-        x, y = wcs.toImage(ra,dec,units='deg')
-    else:
-        x, y = wcs.world_to_pixel(SkyCoord(ra = np.array(ra)*u.degree, dec = np.array(dec)*u.degree))
+    bpass = roman.getBandpasses()[band]
 
-    psfs = np.zeros((stampsize * stampsize,np.size(x)))
+    psfs = np.zeros((stampsize * stampsize, np.size(x)))
+    sed = galsim.SED(galsim.LookupTable([100, 2600], [1, 1],
+                     interpolant='linear'),
+                     wave_type='nm', flux_type='fphotons')
 
-    k = 0
-
-    sed = galsim.SED(galsim.LookupTable([100, 2600], [1,1], interpolant='linear'),
-                            wave_type='nm', flux_type='fphotons')
-    point = None
     if pixel:
         point = galsim.Pixel(0.1)*sed
     else:
         point = galsim.DeltaFunction()
         point *= sed
 
-    point = point.withFlux(1,bpass)
+    point = point.withFlux(1, bpass)
+    convolvedpsf = galsim.Convolve(point, psf)
+
+
+
+    # Loop over the grid points, draw the PSF at each one,
+    # and append to a list.
+
+    stamp = None
     oversampling_factor = 1
-    pupil_bin = 8
+    stamp = galsim.Image(stampsize*oversampling_factor,
+                        stampsize*oversampling_factor, wcs=wcs)
 
-    newwcs = wcs
-    #Loop over the grid points, draw the PSF at each one, and append to a list.
+    Lager.debug(wcs.toWorld(1,1,units='deg'))
+    Lager.debug('x')
+    Lager.debug(x)
 
-    #How different are these two methods? TODO XXX
+    for a, ij in enumerate(zip(x.flatten(), y.flatten())):
+        i, j = ij
+        psfs[:, a] = convolvedpsf.drawImage(bpass, method='no_pixel',
+                                            center=galsim.PositionD(i, j),
+                                            use_true_center=True, image=stamp,
+                                            wcs=wcs).array.flatten()
 
-    #roman_psf =  util_ref.getPSF(x_loc,y_loc,pupil_bin)
-    roman_psf = galsim.roman.getPSF(1,band, pupil_bin=8, wcs = newwcs)
-
-    for a,ij in enumerate(zip(x.flatten(),y.flatten())):
-        i,j = ij
-        stamp = galsim.Image(stampsize*oversampling_factor,stampsize*oversampling_factor,wcs=newwcs)
-
-        if not include_photonOps:
-            if use_roman:
-                convolvedpsf = galsim.Convolve(point, roman_psf)
-            else:
-                convolvedpsf = galsim.Convolve(point, psf)
-            result = convolvedpsf.drawImage(bpass, method='no_pixel',\
-                center = galsim.PositionD(i, j),use_true_center = True, image = stamp, wcs = newwcs)
-
-        else:
-            photon_ops = [util_ref.getPSF(i,j,8)] + util_ref.photon_ops
-            result = point.drawImage(bpass,wcs=newwcs, method='phot', photon_ops=photon_ops, rng=util_ref.rng, \
-                n_photons=int(1e6),maxN=int(1e6),poisson_flux=False, center = galsim.PositionD(i+1, j+1),\
-                    use_true_center = True, image=stamp)
-
-        '''
-        plt.figure(figsize = (5,5))
-        plt.title('PSF inside CBg')
-        plt.imshow(result.array)
-        plt.colorbar()
-        plt.show()
-        '''
-
-        psfs[:,k] = result.array.flatten()
-        k += 1
-
-    newstamp = galsim.Image(stampsize*oversampling_factor,stampsize*oversampling_factor,wcs=newwcs)
-    #roman_bandpasses[band]
-    '''
-    if not psf:
-        bgpsf = (util_ref.getPSF(2048,2048,pupil_bin)*sed).drawImage(bpass, wcs = newwcs, center = (5, 5), use_true_center = True, image = newstamp)
-    else:
-        bgpsf = (psf*sed).drawImage(bpass, wcs = newwcs, center = (5, 5), use_true_center = True, image = newstamp)
-    bgpsf = bgpsf.array
-    '''
-    bgpsf = None
-    return psfs, bgpsf
+    return psfs, wcs, psf
 
 
 def findAllExposures(snid, ra, dec, peak, start, end, band, maxbg=24,

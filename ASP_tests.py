@@ -329,3 +329,54 @@ def test_calculate_background_level():
     msg = f"Expected {expected_output}, but got {output}"
     assert np.isclose(output, expected_output, rtol=1e-7), msg
 
+
+def test_construct_psf_background():
+    pointing = 43623
+    SCA = 7
+    truth = 'simple_model'
+    band = 'Y106'
+    size = 7
+    imagepath = roman_path + (f'/RomanTDS/images/{truth}/{band}/{pointing}'
+                                    f'/Roman_TDS_{truth}_{band}_{pointing}_'
+                                    f'{SCA}.fits.gz')
+    fits_image = fits.open(imagepath)
+    wcs = galsim.AstropyWCS(wcs = WCS(fits_image[1].header))
+    ra = 8.08119424
+    dec = -44.49315254
+    cutout_image = Cutout2D(fits_image[1].data,
+                            SkyCoord(ra=ra*u.degree, dec=dec*u.degree),
+                            size, wcs=WCS(fits_image[1].header))
+    ra_grid, dec_grid = make_regular_grid(ra, dec, wcs,
+                                   size=size, spacing=3.0)
+
+    config_file = './temp_tds.yaml'
+    util_ref = roman_utils(config_file=config_file, visit=pointing, sca=SCA)
+
+    psf_background, wcs1, cpsf1 = construct_psf_background(ra_grid, dec_grid, wcs,
+                                              x_loc=2044, y_loc=2044,
+                                              stampsize=size, band='Y106',
+                                              use_roman=True,
+                                              util_ref=util_ref)
+    test_psf_background = np.load('tests/testdata/test_psf_bg.npy')
+    assert np.allclose(psf_background, test_psf_background, atol=1e-7), \
+        "The PSF background does not match the test example, they disagree by"\
+        + f" {np.max(np.abs(psf_background - test_psf_background))}"
+
+    psf_background, wcs2, cpsf2 = construct_psf_background(ra_grid, dec_grid, WCS(fits_image[1].header),
+                                              x_loc=2044, y_loc=2044,
+                                              stampsize=size, band='Y106',
+                                              use_roman=True,
+                                              util_ref=util_ref)
+    Lager.debug('compatible')
+    Lager.debug(wcs1==wcs2)
+
+    Lager.debug(wcs == wcs1)
+    Lager.debug(wcs == wcs2)
+    Lager.debug(wcs1.toWorld(1,1,units='deg'))
+    Lager.debug(wcs2.toWorld(1,1,units='deg'))
+    Lager.debug(wcs1.toWorld(1,1,units='deg') == wcs2.toWorld(1,1,units='deg'))
+    import pdb; pdb.set_trace()
+    assert np.allclose(psf_background, test_psf_background, atol=1e-7), \
+        "The PSF background does not match the test example, they disagree by"\
+        + f" {np.max(np.abs(psf_background - test_psf_background))}"
+
