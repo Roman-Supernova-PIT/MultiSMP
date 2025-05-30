@@ -1434,6 +1434,7 @@ def make_contour_grid(image, wcs, numlevels = None, percentiles = [0, 90, 98, 10
     xx = xx.flatten()
     yy = yy.flatten()
     Lager.debug(f'Built a grid with {np.size(xx)} points')
+    Lager.debug(f'Grid points: {xx[:5]}, {yy[:5]}')
 
     result = wcs.toWorld(xx, yy, units='deg')
     ra_grid = result[0]
@@ -1703,7 +1704,6 @@ def extract_sn_from_parquet_file_and_write_to_csv(parquet_file, sn_path,
     '''
     # Get the supernova IDs from the parquet file
     df = open_parquet(parquet_file, sn_path, obj_type='SN')
-    # For now, this is only supported for SNe. TODO
     if mag_limits is not None:
         min_mag, max_mag = mag_limits
         # This can't always be just g band I think. TODO
@@ -1717,6 +1717,48 @@ def extract_sn_from_parquet_file_and_write_to_csv(parquet_file, sn_path,
         raise ValueError('No supernovae found in the given range.')
 
     pd.DataFrame(SN_ID).to_csv(output_path, index=False, header=False)
+    Lager.info(f'Saved to {output_path}')
+
+
+def extract_star_from_parquet_file_and_write_to_csv(parquet_file, sn_path,
+                                                  output_path,
+                                                  ra_range=None,
+                                                  dec_range=None):
+    '''
+    Convenience function for getting a list of star IDs that obey some conditions
+    from a parquet file. This is not used anywhere in the main algorithm.
+
+    Inputs:
+    parquet_file: str,  the path to the parquet file
+    sn_path: str, the path to the supernova data
+    ra_range: a tuple of floats, (min_ra, max_ra), to filter the stars by
+                RA coordinate. If None, no filtering is done.
+    dec_range: a tuple of floats, (min_dec, max_dec), to filter the stars by
+                Dec coordinate. If None, no filtering is done.
+
+    Output:
+    Saves a csv file of the IDs of stars from the parquet file that
+    pass mag cuts. If none are found, raise a ValueError.
+    '''
+    # Get the star IDs from the parquet file
+    df = open_parquet(parquet_file, sn_path, obj_type='star')
+    df = df[df['object_type'] == 'star']
+    if ra_range is not None:
+        min_ra, max_ra = ra_range
+        if max_ra < min_ra:
+            raise ValueError('max_ra must be greater than min_ra')
+        df = df[(df['ra'] >= min_ra) & (df['ra'] <= max_ra)]
+    if dec_range is not None:
+        min_dec, max_dec = dec_range
+        if max_dec < min_dec:
+            raise ValueError('max_dec must be greater than min_dec')
+        df = df[(df['dec'] >= min_dec) & (df['dec'] <= max_dec)]
+    star_ID = df.id.values
+    star_ID = np.array(star_ID, dtype=int)
+    Lager.info(f'Found {np.size(star_ID)} stars in the given range.')
+    if np.size(star_ID) == 0:
+        raise ValueError('No stars found in the given range.')
+    pd.DataFrame(star_ID).to_csv(output_path, index=False, header=False)
     Lager.info(f'Saved to {output_path}')
 
 
