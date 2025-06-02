@@ -568,11 +568,11 @@ def construct_psf_source(x, y, pointing, SCA, stampsize=25, x_center=None,
         some offset from the center.
     Inputs:
     x, y: floats, are locations in the SCA
-    pointing, SCA: the pointing and SCA of the image
-    stampsize = size of cutout image used
+    pointing, SCA: ints, the pointing and SCA of the image
+    stampsize = int, size of cutout image used
     x_center and y_center: floats, x and y location in the cutout.
-    sed: the SED of the source
-    flux: If you are using this function to build a model grid point, this
+    sed: galsim.sed.SED object, the SED of the source
+    flux: float, If you are using this function to build a model grid point, this
         should be 1. If you are using this function to build a model of
         a source, this should be the flux of the source.
 
@@ -580,9 +580,6 @@ def construct_psf_source(x, y, pointing, SCA, stampsize=25, x_center=None,
     psf_image: numpy array of floats of size (stampsize, stampsize), the image
                 of the PSF at the (x,y) location.
     '''
-    Lager.debug('SED TYPE')
-    Lager.debug(type(sed))
-
     Lager.debug(f'ARGS IN PSF SOURCE: \n x, y: {x, y} \n' +
                 f' Pointing, SCA: {pointing, SCA} \n' +
                 f' stamp size: {stampsize} \n' +
