@@ -271,16 +271,14 @@ def generateGuess(imlist, ra_grid, dec_grid):
     return all_vals/len(wcslist)
 
 
-def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize,
-                             psf=None, pixel=False,
+def construct_psf_background(ra, dec, sca_wcs, x_loc, y_loc, stampsize, psf=None, pixel=False,
                              util_ref=None, band=None):
 
     """Constructs the background model around a certain image (x,y) location
     and a given array of RA and DECs.
     Inputs:
     ra, dec: arrays of floats, RA and DEC values for the grid
-    wcs: the wcs of the image, if the image is a cutout, this MUST be the wcs
-        of the cutout. A snappl.wcs.BaseWCS object.
+    sca_wcs: the wcs of the entire image, i.e. the entire SCA. A snappl.wcs.BaseWCS object.
     x_loc, y_loc: floats,the pixel location of the image in the FULL image,
         i.e. x y location in the SCA.
     stampsize: int, the size of the stamp being used
@@ -305,21 +303,11 @@ def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize,
     assert util_ref is not None or band is not None, "you must provide at \
         least util_ref or band"
 
-    # This is the WCS galsim uses to draw the PSF.
-    galsim_wcs = wcs.get_galsim_wcs()
-    x, y = wcs.world_to_pixel(ra, dec)
-
-    # With plus ones here I recover the values pre-refactor!
-
-    if psf is None:
-        # How different are these two methods? TODO XXX
-        pupil_bin = 8
-        # psf = util_ref.getPSF(x_loc, y_loc, pupil_bin=pupil_bin)
-        psf = galsim.roman.getPSF(1, band, pupil_bin=pupil_bin, wcs=galsim_wcs)
-
+    # I call this x_SCA to highlight that it's the location in the SCA, not the cutout.
+    x_SCA, y_SCA = sca_wcs.world_to_pixel(ra, dec)
     bpass = roman.getBandpasses()[band]
 
-    psfs = np.zeros((stampsize * stampsize, np.size(x)))
+    psfs = np.zeros((stampsize * stampsize, np.size(x_SCA)))
 
     sed = galsim.SED(galsim.LookupTable([100, 2600], [1, 1],
                      interpolant="linear"),
@@ -332,19 +320,22 @@ def construct_psf_background(ra, dec, wcs, x_loc, y_loc, stampsize,
         point *= sed
 
     point = point.withFlux(1, bpass)
-    oversampling_factor = 1
-    convolvedpsf = galsim.Convolve(point, psf)
-    stamp = galsim.Image(stampsize*oversampling_factor,
-                         stampsize*oversampling_factor, wcs=galsim_wcs)
+
+    pointing = util_ref.visit
+    SCA = util_ref.sca
+
+    psf_object = PSF.get_psf_object("ou24PSF", pointing=pointing, sca=SCA, size=stampsize, include_photonOps=False)
+    # See run_one_object documentation to explain this pixel coordinate conversion.
+    x_loc = int(np.floor(x_loc + 0.5))
+    y_loc = int(np.floor(y_loc + 0.5))
+
     # Loop over the grid points, draw a PSF at each one, and append to a list.
-    for a, ij in enumerate(zip(x.flatten(), y.flatten())):
+    for a, ij in enumerate(zip(x_SCA.flatten(), y_SCA.flatten())):
         if a % 50 == 0:
-            Lager.debug(f"Drawing PSF {a} of {np.size(x)}")
+            Lager.debug(f"Drawing PSF {a} of {np.size(x_loc)}")
         i, j = ij
-        psfs[:, a] = convolvedpsf.drawImage(bpass, method="no_pixel",
-                                            center=galsim.PositionD(i, j),
-                                            use_true_center=True, image=stamp,
-                                            wcs=galsim_wcs).array.flatten()
+
+        psfs[:, a] = psf_object.get_stamp(x0=x_loc, y0=y_loc, x=i, y=j, flux=1., seed=None).flatten()
 
     return psfs
 
@@ -551,8 +542,10 @@ def construct_psf_source(x, y, pointing, SCA, stampsize=25, x_center=None,
     psf_image: numpy array of floats of size stampsize**2, the image
                 of the PSF at the (x,y) location.
     """
+
     if not isinstance(x, int) or not isinstance(y, int):
         raise TypeError(f"x and y must be integers, not {type(x), type(y)}")
+
     Lager.debug(f"ARGS IN PSF SOURCE: \n x, y: {x, y} \n" +
                 f" Pointing, SCA: {pointing, SCA} \n" +
                 f" stamp size: {stampsize} \n" +
@@ -1730,6 +1723,12 @@ def run_one_object(ID, object_type, num_total_images, num_detect_images,
         x = int(np.floor(object_x + 0.5))
         y = int(np.floor(object_y + 0.5))
         pointing, SCA = exposures["Pointing"][0], exposures["SCA"][0]
+        Lager.debug(f'Trying to switch to new coords')
+        snx = x
+        sny = y
+        x = int( np.floor( x + 0.5 ) )
+        y = int( np.floor( y + 0.5 ) )
+        Lager.debug(f"x, y, snx, sny, {x, y, snx, sny}")
         psf_source_array = construct_psf_source(x, y, pointing, SCA,
                                                 stampsize=size,
                                                 x_center=object_x, y_center=object_y,
@@ -1770,7 +1769,7 @@ def run_one_object(ID, object_type, num_total_images, num_detect_images,
         if grid_type != "none":
             background_model_array = \
                 construct_psf_background(ra_grid, dec_grid,
-                                         cutout_image_list[i].get_wcs(),
+                                         image_list[i].get_wcs(),
                                          object_x, object_y, size, psf=drawing_psf,
                                          pixel=pixel,
                                          util_ref=util_ref, band=band)
